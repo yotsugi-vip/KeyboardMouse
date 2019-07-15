@@ -17,5 +17,4 @@
 #include <linux/uinput.h>
 #include <signal.h>
 #include "type.h"
-#include "findDevice.h"
 #endif  /* STDFX_H */

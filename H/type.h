@@ -1,6 +1,6 @@
 /*******************************************************************************
  * File      : type.h
- * Author    : 
+ * Author    : yotugi
  * Date      : 2019/06/28
  * CopyRight : All rights reserved
 *******************************************************************************/
@@ -38,7 +38,7 @@ typedef struct ST_KEY_STATUS
 
 typedef struct ST_FD_DATA 
 {
-    char* eventFile;
+    char eventFile[1024];
     int fd;
 } st_fd_data;
 

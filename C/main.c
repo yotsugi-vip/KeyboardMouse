@@ -13,14 +13,15 @@
 /*******************************************************************************
  * Global
  *******************************************************************************/
-struct  input_event stInput;                /* Read Input Event Struct          [インプットイベント型]                 */
-struct  input_event stExec;                 /* Write Exec Event Struct          [実行イベント用]                       */
-int fd_key = 0;                             /* Keyboard device file descriptor  [キー入力ファイルディスクリプタ]       */
-int fd_mouse = 0;                           /* Mouse device file descriptor     [マウス入力ファイルディスクリプタ]     */
-int fd_virtual_device = 0;                  /* virtual devicr file descriptor   [仮想デバイスのファイルディスクリプタ] */
-st_key_status keyStatus = { KEY_RELEASE };  /* Key Status                       [キーステータス]                       */
-bool blLoop = FALSE;                        /* Main Loop Exec                   [メインループのループ許可]             */
-st_fd_data fdInput;                         /* Input struct                     [入力ファイルディスクリプタの構造体]   */
+struct  input_event stInput;                    /* Read Input Event Struct          [インプットイベント型]                 */
+struct  input_event stExec;                     /* Write Exec Event Struct          [実行イベント用]                       */                      
+int fd_virtual_device = 0;                      /* virtual devicr file descriptor   [仮想デバイスのファイルディスクリプタ] */
+st_key_status keyStatus = { KEY_RELEASE };      /* Key Status                       [キーステータス]                       */
+st_key_status preKeyStatus = { KEY_RELEASE };   /* Pre key Status                   [前回キーステータス]                   */
+bool blLoop = TRUE;                             /* Main Loop Exec                   [メインループのループ許可]             */
+st_fd_data fdInput;                             /* Input struct                     [入力ファイルディスクリプタの構造体]   */
+st_fd_data fdMouse;                             /* Mouse device file descriptor     [マウス入力ファイルディスクリプタ]     */
+
 /*******************************************************************************
  * ProtoType
  *******************************************************************************/
@@ -32,7 +33,7 @@ int openDevice( char*, int );
 void virtualDeviceSetup( void );
 void keyCtrl( int, int, int, int );
 void closeDevices( void );
-
+void KeyEvent(void);
 /*******************************************************************************
  * FuncName : main
  * Summary  : main function [メイン関数]
@@ -41,8 +42,12 @@ void closeDevices( void );
  *******************************************************************************/
 int main()
 {
+    strcpy( fdInput.eventFile, "/dev/input/event3" );
+    strcpy( fdMouse.eventFile, "/dev/input/event9" );
+
     //testMouse();
     //testKey();
+
     virtualDeviceSetup();
     getKeyEvent();
     closeDevices();
@@ -57,19 +62,21 @@ int main()
  *******************************************************************************/
 void getKeyEvent() 
 {
-    if( ( fd_key   = openDevice( "/dev/input/event3", O_RDWR ) ) == -1 ) return;
-    if( ( fd_mouse = openDevice( "/dev/input/event9", O_RDWR ) ) == -1 ) return;
+    if( ( fdInput.fd   = openDevice( fdInput.eventFile, O_RDWR ) ) == -1 ) return;
     if( ioctlSet(1) == -1 ) return;
 
     /* Main loop [メインループ] */
-    while( blLoop == FALSE ) 
+    while( blLoop == TRUE ) 
     {    
         /* Read Input key [入力キー読み込み] */
-        if( read( fd_key, &stInput, sizeof(stInput) ) != sizeof(stInput) ) 
+        if( read( fdInput.fd, &stInput, sizeof(stInput) ) != sizeof(stInput) ) 
         {
             printf( "error key event can't read [errno:%d %s]\n", errno, strerror(errno) );
             continue;
         }
+
+        /* 前回キー状態記録 */
+        preKeyStatus = keyStatus;
 
         switch( stInput.code ) 
         {
@@ -102,7 +109,8 @@ void getKeyEvent()
             default:
                 break;
         }
-        MouseEvent();        
+        KeyEvent(); 
+        MouseEvent();       
     }
     ioctlSet(0);
 }
@@ -115,24 +123,7 @@ void getKeyEvent()
  *******************************************************************************/
 void MouseEvent()
 {
-    if( keyStatus.ctl != 0 && keyStatus.shift != 0 && keyStatus.f12 != 0 ) 
-    {
-        blLoop = TRUE;
-    }
-    
-    if( keyStatus.ctl != 0 && keyStatus.shift != 0 && keyStatus.enter != 0 ) 
-    {
-        /*  Excute nter key press [エンター入力を実行] */
-        keyCtrl( fd_virtual_device, EV_KEY, BTN_LEFT, KEY_PUT );
-
-        /*  I don't know what's doing [よくわからん] */
-        keyCtrl( fd_virtual_device, EV_SYN, 0, 0 );
-
-        /* Excute Enter key release [エンターリリースを実行] */
-        keyCtrl( fd_virtual_device, EV_KEY, BTN_LEFT, KEY_RELEASE );
-    }
-
-    for( int i = 2; i > 0; i-- ) 
+    for( int i = keyStatus.up | keyStatus.down | keyStatus.left | keyStatus.right; i > 0; i-- ) 
     {
         keyCtrl( fd_virtual_device, EV_REL, CODE_Y, -keyStatus.up);
         keyCtrl( fd_virtual_device, EV_SYN, 0, 0 );
@@ -144,6 +135,25 @@ void MouseEvent()
     }
 }
 
+void KeyEvent()
+{
+    if( keyStatus.shift == 0 && keyStatus.ctl == 0 ) return;
+
+    if( keyStatus.ctl != 0 && keyStatus.shift != 0 && keyStatus.f12 != 0 ) 
+    {
+        blLoop = FALSE;
+    }
+    
+    if( keyStatus.ctl != 0 && keyStatus.shift != 0 && ( keyStatus.left != 0 || preKeyStatus.left != 0 ) )
+    {
+        /*  Excute nter key press [エンター入力を実行] */
+        keyCtrl( fd_virtual_device, EV_KEY, BTN_LEFT, keyStatus.left );
+
+        /*  I don't know what's doing [よくわからん] */
+        keyCtrl( fd_virtual_device, EV_SYN, 0, 0 );
+    }
+}
+
 /*******************************************************************************
  * FuncName : testMouse
  * Summary  : Mouse Debug [マウスデバック]
@@ -152,18 +162,17 @@ void MouseEvent()
  *******************************************************************************/
 void testMouse() 
 {
-    
-    if( ( fd_mouse = open( "/dev/input/event9", O_RDWR ) ) == -1 ) 
+    if( ( fdMouse.fd = open( fdMouse.eventFile, O_RDWR ) ) == -1 ) 
     {
         printf("error\n");
         return;
     }
 
-    ioctl(fd_mouse, EVIOCGRAB, 1);
+    ioctl(fdMouse.fd, EVIOCGRAB, 1);
 
     for(;;) 
     {
-        if( read( fd_mouse, &stInput, sizeof(stInput) ) == sizeof(stInput) )
+        if( read( fdMouse.fd, &stInput, sizeof(stInput) ) == sizeof(stInput) )
         {
             printf("code:%02d type:%04d value:%04d\n", stInput.code, stInput.type, stInput.value );
         }
@@ -179,11 +188,11 @@ void testMouse()
 void testKey() 
 {
    
-    if( ( fd_key = open("/dev/input/event3", O_RDWR ) ) == -1 ) return;
+    if( ( fdInput.fd = open("/dev/input/event3", O_RDWR ) ) == -1 ) return;
 
     for(;;) 
     {
-        if( read( fd_key, &stInput, sizeof(stInput) ) == sizeof(stInput) ) 
+        if( read( fdInput.fd, &stInput, sizeof(stInput) ) == sizeof(stInput) ) 
         {
             printf("time:%08ld code:%04d type:%04d value:%04d\n",stInput.time.tv_sec, stInput.code, stInput.type, stInput.value );
         }
@@ -221,19 +230,19 @@ int openDevice( char* devive_file, int option )
  *******************************************************************************/
 int ioctlSet( int arg ) 
 {
-    if( fd_key == -1 )
+    if( fdInput.fd == -1 )
     {
         printf("error key eventfile can't open\n");
         return -1;
     }
 
     /* Excute Key release [キーのリリースイベントを実行] */
-    keyCtrl( fd_key, EV_KEY, KEY_ENTER, KEY_RELEASE);
+    keyCtrl( fdInput.fd, EV_KEY, KEY_ENTER, KEY_RELEASE);
 
     /* Write invalid data  [無効データ書き込み] */
-    keyCtrl( fd_key, 0, 0, 0);
+    keyCtrl( fdInput.fd, 0, 0, 0);
 
-    if( ioctl( fd_key, EVIOCGRAB, arg ) == -1 ) 
+    if( ioctl( fdInput.fd, EVIOCGRAB, arg ) == -1 ) 
     {
         printf( "erro ioctl [errno:%d %s]", errno, strerror(errno) );
         return -1;
@@ -307,19 +316,19 @@ void closeDevices()
     ioctl( fd_virtual_device, UI_DEV_DESTROY );
 
     /* close all device file [各デバイスファイルクローズ] */
-    if( close( fd_key ) == -1 ) 
+    if( close( fdInput.fd ) == -1 ) 
     {
         printf("error %s couldn't close [errno%d %s]\n", "key", errno, strerror(errno) );
        
     } else {
-        printf("success %s could close\n", "fd_key" );
+        printf("success %s could close\n", "fdInput.fd" );
     }
 
-    if( close( fd_mouse) == -1 ) 
+    if( close( fdMouse.fd) == -1 ) 
     {
-        printf("error %s couldn't close [errno%d %s]\n", "fd_mouse", errno, strerror(errno) );
+        printf("error %s couldn't close [errno%d %s]\n", "fdMouse.fd", errno, strerror(errno) );
     } else {
-        printf("success %s could close\n", "fd_mouse" );
+        printf("success %s could close\n", "fdMouse.fd" );
     }
 
     if( close( fd_virtual_device ) == -1 ) 
